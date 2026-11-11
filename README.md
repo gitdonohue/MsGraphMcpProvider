@@ -89,6 +89,10 @@ public interface ITeamsGraphClient
 
 `samples/WinUIExample` is a WinUI 3 app that starts the server, signs in with device code (code shown in bold with a copy button) and optionally enables posting.
 
+## Publishing
+
+The `v*` tag workflow publishes to NuGet.org using OIDC trusted publishing. Configure a NuGet.org trusted-publishing policy for repository `gitdonohue/MsGraphMcpProvider`, workflow `.github/workflows/publish.yml`, and GitHub environment `production`. Set the repository Actions secret `NUGET_USER` to the NuGet username of the account that created the policy (the policy creator, not merely the package owner). A “No matching trust policy” login failure means this username or the policy scope does not match.
+
 ## License
 
 MIT
