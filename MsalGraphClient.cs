@@ -1,0 +1,166 @@
+using Microsoft.Identity.Client;
+using Microsoft.Identity.Client.Broker;
+using System.Net.Http.Headers;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Text.Json;
+
+namespace MsGraphMcpProvider;
+
+/// <summary>
+/// MSAL-backed <see cref="ITeamsGraphClient"/>. Supports either ClientId + TenantId with the Windows broker
+/// (interactive sign-in), or ClientId + device code (sign-in is started explicitly via
+/// <see cref="SignInWithDeviceCodeAsync"/>, never by an MCP caller).
+/// </summary>
+public sealed class MsalGraphClient : ITeamsGraphClient
+{
+	public static readonly string[] DefaultScopes =
+	[
+		"User.Read", "Chat.Read", "Team.ReadBasic.All", "Channel.ReadBasic.All", "ChannelMessage.Read.All"
+	];
+
+	private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(30) };
+	private static readonly Uri GraphBase = new("https://graph.microsoft.com/v1.0/");
+
+	private readonly SemaphoreSlim authLock = new(1, 1);
+	private readonly IntPtr hwnd;
+	private AuthenticationResult? authCache;
+
+	public bool UseDeviceCode { get; }
+	public IPublicClientApplication PublicClientApp { get; }
+
+	/// <param name="clientId">Entra app registration (client) id.</param>
+	/// <param name="tenantId">Tenant id or domain. Defaults to "organizations" when empty.</param>
+	/// <param name="useDeviceCode">Use device-code sign-in instead of the Windows broker.</param>
+	/// <param name="hwnd">Parent window for interactive broker prompts (broker mode only).</param>
+	public MsalGraphClient(string clientId, string? tenantId = null, bool useDeviceCode = false, IntPtr hwnd = default)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(clientId);
+		UseDeviceCode = useDeviceCode;
+		this.hwnd = hwnd;
+		if (this.hwnd == IntPtr.Zero && !useDeviceCode && OperatingSystem.IsWindows())
+			this.hwnd = GetConsoleWindow();
+
+		var tenant = string.IsNullOrWhiteSpace(tenantId) ? "organizations" : tenantId;
+		var builder = PublicClientApplicationBuilder.Create(clientId)
+			.WithAuthority($"https://login.microsoftonline.com/{tenant}")
+			.WithDefaultRedirectUri();
+		// Device-code clients must not use the Windows broker.
+		PublicClientApp = useDeviceCode
+			? builder.Build()
+			: builder.WithBroker(new BrokerOptions(BrokerOptions.OperatingSystems.Windows)).Build();
+	}
+
+	[DllImport("kernel32.dll")]
+	private static extern IntPtr GetConsoleWindow();
+
+	/// <summary>Starts device-code sign-in. Display the code only in trusted application UI.</summary>
+	public async Task<AuthenticationResult> SignInWithDeviceCodeAsync(Action<DeviceCodeResult> showCode,
+		string[]? scopes = null, CancellationToken cancellationToken = default)
+	{
+		if (!UseDeviceCode)
+			throw new InvalidOperationException("This client is not configured for device-code sign-in.");
+		await authLock.WaitAsync(cancellationToken);
+		try
+		{
+			var result = await PublicClientApp.AcquireTokenWithDeviceCode(scopes ?? DefaultScopes, code =>
+			{
+				showCode(code);
+				return Task.CompletedTask;
+			}).ExecuteAsync(cancellationToken);
+			// Single-account cache: don't silently choose another user later.
+			foreach (var account in await PublicClientApp.GetAccountsAsync())
+				if (account.HomeAccountId.Identifier != result.Account.HomeAccountId.Identifier)
+					await PublicClientApp.RemoveAsync(account);
+			authCache = result;
+			return result;
+		}
+		finally
+		{
+			authLock.Release();
+		}
+	}
+
+	/// <summary>Signs in interactively through the Windows broker (non-device-code mode).</summary>
+	public Task<AuthenticationResult?> SignInAsync(string[]? scopes = null, CancellationToken cancellationToken = default) =>
+		GetAuthAsync(scopes ?? DefaultScopes, cancellationToken);
+
+	public Task<GraphResponse> GetAsync(string endpoint, string scope, CancellationToken cancellationToken) =>
+		SendAsync(HttpMethod.Get, endpoint, scope, null, cancellationToken);
+
+	public Task<GraphResponse> PostAsync(string endpoint, JsonElement body, string scope, CancellationToken cancellationToken) =>
+		SendAsync(HttpMethod.Post, endpoint, scope, body, cancellationToken);
+
+	private static bool CanReuse(AuthenticationResult? auth, string[] scopes) =>
+		auth != null && auth.ExpiresOn > DateTimeOffset.UtcNow.AddMinutes(1) &&
+		scopes.All(s => auth.Scopes.Contains(s, StringComparer.OrdinalIgnoreCase));
+
+	private async Task<AuthenticationResult?> GetAuthAsync(string[] scopes, CancellationToken cancellationToken)
+	{
+		await authLock.WaitAsync(cancellationToken);
+		try
+		{
+			if (CanReuse(authCache, scopes))
+				return authCache;
+
+			IAccount? account = UseDeviceCode
+				? authCache?.Account ?? (await PublicClientApp.GetAccountsAsync()).SingleOrDefault()
+				: PublicClientApplication.OperatingSystemAccount;
+			if (account == null)
+				return null; // Device-code sign-in is initiated explicitly by the application.
+
+			try
+			{
+				authCache = await PublicClientApp.AcquireTokenSilent(scopes, account).ExecuteAsync(cancellationToken);
+			}
+			catch (MsalUiRequiredException)
+			{
+				if (UseDeviceCode)
+					return null; // Needs the application's explicit sign-in.
+				try
+				{
+					authCache = await PublicClientApp.AcquireTokenInteractive(scopes)
+						.WithAccount(account)
+						.WithParentActivityOrWindow(hwnd)
+						.WithPrompt(Prompt.NoPrompt)
+						.ExecuteAsync(cancellationToken);
+				}
+				catch (MsalException)
+				{
+					return null;
+				}
+			}
+			catch (MsalException)
+			{
+				return null;
+			}
+			return authCache;
+		}
+		finally
+		{
+			authLock.Release();
+		}
+	}
+
+	private async Task<GraphResponse> SendAsync(HttpMethod method, string endpoint, string scope, JsonElement? body,
+		CancellationToken cancellationToken)
+	{
+		var uri = new Uri(GraphBase, endpoint);
+		if (uri.Scheme != Uri.UriSchemeHttps || uri.Host != GraphBase.Host || !uri.IsDefaultPort ||
+			uri.UserInfo.Length != 0 || uri.Fragment.Length != 0 ||
+			!uri.AbsolutePath.StartsWith("/v1.0/", StringComparison.Ordinal))
+			throw new ArgumentException("Only Microsoft Graph v1.0 endpoints are allowed.", nameof(endpoint));
+
+		var auth = await GetAuthAsync([scope], cancellationToken);
+		if (auth == null)
+			return new GraphResponse(string.Empty, System.Net.HttpStatusCode.Unauthorized);
+
+		using var request = new HttpRequestMessage(method, uri);
+		request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", auth.AccessToken);
+		if (body.HasValue)
+			request.Content = new StringContent(body.Value.GetRawText(), Encoding.UTF8, "application/json");
+		using var response = await Http.SendAsync(request, cancellationToken);
+		var content = await response.Content.ReadAsStringAsync(cancellationToken);
+		return new GraphResponse(content, response.StatusCode);
+	}
+}

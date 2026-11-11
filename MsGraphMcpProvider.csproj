@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Library</OutputType>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="samples\**" />
+    <EmbeddedResource Remove="samples\**" />
+    <Content Remove="samples\**" />
+    <None Remove="samples\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Identity.Client" Version="4.91.1" />
+    <PackageReference Include="Microsoft.Identity.Client.Broker" Version="4.91.1" />
+    <PackageReference Include="ModelContextProtocol.AspNetCore" Version="2.3.0" />
+  </ItemGroup>
+
+</Project>
