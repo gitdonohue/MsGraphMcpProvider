@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk.Web">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -7,14 +7,38 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <PropertyGroup Label="Package">
+    <PackageId>MsGraphMcpProvider</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>gitdonohue</Authors>
+    <Description>Embeddable, loopback-only Model Context Protocol (MCP) server that exposes Microsoft Teams chats and channels through Microsoft Graph. Supports device-code or broker sign-in via MSAL, with opt-in channel posting.</Description>
+    <PackageTags>mcp;modelcontextprotocol;microsoft-graph;msgraph;teams;ai;llm</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageProjectUrl>https://github.com/gitdonohue/MsGraphMcpProvider</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/gitdonohue/MsGraphMcpProvider.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <Copyright>Copyright (c) 2026 gitdonohue</Copyright>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Build">
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
   <ItemGroup>
     <Compile Remove="samples\**" />
     <EmbeddedResource Remove="samples\**" />
-    <Content Remove="samples\**" />
     <None Remove="samples\**" />
   </ItemGroup>
 
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <PackageReference Include="Microsoft.Identity.Client" Version="4.91.1" />
     <PackageReference Include="Microsoft.Identity.Client.Broker" Version="4.91.1" />
     <PackageReference Include="ModelContextProtocol.AspNetCore" Version="2.3.0" />
