@@ -17,7 +17,7 @@ public sealed class MsalGraphClient : ITeamsGraphClient
 {
 	public static readonly string[] DefaultScopes =
 	[
-		"User.Read", "Chat.Read", "Team.ReadBasic.All", "Channel.ReadBasic.All", "ChannelMessage.Read.All"
+		"User.Read", "Chat.Read", "Team.ReadBasic.All", "Channel.ReadBasic.All", "ChannelMessage.Read.All", "Files.Read.All"
 	];
 
 	private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(30) };
@@ -137,6 +137,58 @@ public sealed class MsalGraphClient : ITeamsGraphClient
 		}
 	}
 
+	/// <summary>Forces a token refresh, bypassing the in-memory cache. Returns null if no account is available or refresh fails.</summary>
+	public async Task<AuthenticationResult?> RefreshTokenAsync(string[]? scopes = null, CancellationToken cancellationToken = default)
+	{
+		await authLock.WaitAsync(cancellationToken);
+		try
+		{
+			IAccount? account = UseDeviceCode
+				? authCache?.Account ?? (await PublicClientApp.GetAccountsAsync()).FirstOrDefault()
+				: PublicClientApplication.OperatingSystemAccount;
+			if (account == null)
+				return null;
+			authCache = await PublicClientApp.AcquireTokenSilent(scopes ?? DefaultScopes, account)
+				.WithForceRefresh(true)
+				.ExecuteAsync(cancellationToken);
+			return authCache;
+		}
+		catch (MsalException)
+		{
+			return null;
+		}
+		finally
+		{
+			authLock.Release();
+		}
+	}
+
+	/// <summary>
+	/// Acquires a brand-new token through a full sign-in, ignoring any cached or refreshable token.
+	/// Device-code mode calls <paramref name="showCode"/> with the code to display; broker mode shows an account picker.
+	/// </summary>
+	public async Task<AuthenticationResult> AcquireNewTokenAsync(Action<DeviceCodeResult>? showCode = null,
+		string[]? scopes = null, CancellationToken cancellationToken = default)
+	{
+		scopes ??= DefaultScopes;
+		if (UseDeviceCode)
+			return await SignInWithDeviceCodeAsync(showCode ?? (_ => { }), scopes, cancellationToken);
+
+		await authLock.WaitAsync(cancellationToken);
+		try
+		{
+			authCache = await PublicClientApp.AcquireTokenInteractive(scopes)
+				.WithParentActivityOrWindow(hwnd)
+				.WithPrompt(Prompt.SelectAccount)
+				.ExecuteAsync(cancellationToken);
+			return authCache;
+		}
+		finally
+		{
+			authLock.Release();
+		}
+	}
+
 	/// <summary>Signs in interactively through the Windows broker (non-device-code mode).</summary>
 	public Task<AuthenticationResult?> SignInAsync(string[]? scopes = null, CancellationToken cancellationToken = default) =>
 		GetAuthAsync(scopes ?? DefaultScopes, cancellationToken);
@@ -198,14 +250,49 @@ public sealed class MsalGraphClient : ITeamsGraphClient
 		}
 	}
 
-	private async Task<GraphResponse> SendAsync(HttpMethod method, string endpoint, string scope, JsonElement? body,
-		CancellationToken cancellationToken)
+	public async Task<GraphBinaryResponse> GetBytesAsync(string endpoint, string scope, long maxBytes, CancellationToken cancellationToken)
+	{
+		var uri = ValidateEndpoint(endpoint);
+		var auth = await GetAuthAsync([scope], cancellationToken);
+		if (auth == null)
+			return new GraphBinaryResponse([], string.Empty, System.Net.HttpStatusCode.Unauthorized);
+
+		using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+		request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", auth.AccessToken);
+		using var response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+		var contentType = response.Content.Headers.ContentType?.MediaType ?? "application/octet-stream";
+		if (!response.IsSuccessStatusCode)
+			return new GraphBinaryResponse([], contentType, response.StatusCode);
+		if (response.Content.Headers.ContentLength > maxBytes)
+			throw new InvalidDataException($"The content is larger than the {maxBytes} byte limit.");
+
+		await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+		using var buffer = new MemoryStream();
+		var chunk = new byte[81920];
+		int read;
+		while ((read = await stream.ReadAsync(chunk, cancellationToken)) > 0)
+		{
+			if (buffer.Length + read > maxBytes)
+				throw new InvalidDataException($"The content is larger than the {maxBytes} byte limit.");
+			buffer.Write(chunk, 0, read);
+		}
+		return new GraphBinaryResponse(buffer.ToArray(), contentType, response.StatusCode);
+	}
+
+	private static Uri ValidateEndpoint(string endpoint)
 	{
 		var uri = new Uri(GraphBase, endpoint);
 		if (uri.Scheme != Uri.UriSchemeHttps || uri.Host != GraphBase.Host || !uri.IsDefaultPort ||
 			uri.UserInfo.Length != 0 || uri.Fragment.Length != 0 ||
 			!uri.AbsolutePath.StartsWith("/v1.0/", StringComparison.Ordinal))
 			throw new ArgumentException("Only Microsoft Graph v1.0 endpoints are allowed.", nameof(endpoint));
+		return uri;
+	}
+
+	private async Task<GraphResponse> SendAsync(HttpMethod method, string endpoint, string scope, JsonElement? body,
+		CancellationToken cancellationToken)
+	{
+		var uri = ValidateEndpoint(endpoint);
 
 		var auth = await GetAuthAsync([scope], cancellationToken);
 		if (auth == null)

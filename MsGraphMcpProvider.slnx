@@ -1,7 +1,7 @@
 <Solution>
   <Folder Name="/samples/">
     <Project Path="samples/WinUIExample/WinUIExample.csproj">
-      <Platform Project="x86" />
+      <Platform Project="x64" />
     </Project>
   </Folder>
   <Project Path="MsGraphMcpProvider.csproj" />

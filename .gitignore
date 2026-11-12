@@ -57,3 +57,6 @@ TestResult.xml
 nunit-*.xml
 .vs
 *.TMP
+samples/WinUIExample/Publish
+samples/WinUIExample/Properties/PublishProfiles
+*.user

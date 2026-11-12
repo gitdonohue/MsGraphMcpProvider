@@ -13,6 +13,9 @@ public sealed partial class MainWindow : Window
 	public MainWindow()
 	{
 		InitializeComponent();
+		var settings = UserSettings.Load();
+		ClientIdBox.Text = settings.ClientId;
+		TenantIdBox.Text = settings.TenantId;
 		Closed += async (_, _) => await StopAsync();
 	}
 
@@ -47,19 +50,28 @@ public sealed partial class MainWindow : Window
 		}
 
 		var useDeviceCode = DeviceCodeCheck.IsChecked == true;
+		new UserSettings { ClientId = clientId, TenantId = TenantIdBox.Text.Trim() }.Save();
 		var port = (int)PortBox.Value;
 		var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
 		var client = new MsalGraphClient(clientId, TenantIdBox.Text.Trim(), useDeviceCode, hwnd);
 		var writeAccess = new TeamsChannelWriteAccess { Enabled = WriteCheck.IsChecked == true };
 
-		var provider = new MsGraphMcpProvider.MsGraphMcpProvider();
+		var provider = new MsGraphMcpProvider.MsGraphMcpProvider
+		{
+			ImageSave = new MsGraphMcpProvider.TeamsImageSaveOptions
+			{
+				Directory = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+					"MsGraphMcpProvider", "WinUIExample", "images")
+			}
+		};
 		await provider.StartAsync(port, client, writeAccess: writeAccess);
 		MsGraphMcpProvider = provider;
 		MsalGraphClient = client;
 
 		ToggleButton.Content = "Stop MCP server";
-		SignInButton.IsEnabled = useDeviceCode;
+		RefreshButton.IsEnabled = true;
 		PortBox.IsEnabled = ClientIdBox.IsEnabled = TenantIdBox.IsEnabled = DeviceCodeCheck.IsEnabled = WriteCheck.IsEnabled = false;
+		NewTokenButton.IsEnabled = true;
 		StatusText.Text = $"MCP server running at http://127.0.0.1:{port}/mcp";
 		if (useDeviceCode)
 			_ = SignInAsync(client);
@@ -74,15 +86,67 @@ public sealed partial class MainWindow : Window
 		Clipboard.SetContent(data);
 	}
 
-	private async void SignInButton_Click(object sender, RoutedEventArgs e)
+	private async void RefreshButton_Click(object sender, RoutedEventArgs e)
 	{
-		if (MsalGraphClient is { UseDeviceCode: true } client)
-			await SignInAsync(client);
+		if (MsalGraphClient is not { } client)
+			return;
+		RefreshButton.IsEnabled = false;
+		try
+		{
+			var result = await client.RefreshTokenAsync();
+			if (MsalGraphClient == client)
+				StatusText.Text = result == null
+					? "Token refresh failed. Sign in again."
+					: $"Token refreshed for {result.Account.Username}. Expires {result.ExpiresOn.LocalDateTime:t}.";
+		}
+		catch (Exception ex)
+		{
+			if (MsalGraphClient == client)
+				StatusText.Text = $"Token refresh failed: {ex.Message}";
+		}
+		finally
+		{
+			if (MsalGraphClient == client)
+				RefreshButton.IsEnabled = true;
+		}
+	}
+
+	private async void NewTokenButton_Click(object sender, RoutedEventArgs e)
+	{
+		if (MsalGraphClient is not { } client)
+			return;
+		NewTokenButton.IsEnabled = false;
+		CodePanel.Visibility = Visibility.Collapsed;
+		try
+		{
+			var result = await client.AcquireNewTokenAsync(code => DispatcherQueue.TryEnqueue(async () =>
+			{
+				StatusText.Text = code.Message;
+				CodeText.Text = code.UserCode;
+				CodePanel.Visibility = Visibility.Visible;
+				CopyCode();
+				await Launcher.LaunchUriAsync(new Uri(code.VerificationUrl.ToString()));
+			}));
+			if (MsalGraphClient == client)
+				StatusText.Text = $"New token acquired for {result.Account.Username}. Expires {result.ExpiresOn.LocalDateTime:t}.";
+		}
+		catch (Exception ex)
+		{
+			if (MsalGraphClient == client)
+				StatusText.Text = $"Acquiring new token failed: {ex.Message}";
+		}
+		finally
+		{
+			if (MsalGraphClient == client)
+			{
+				NewTokenButton.IsEnabled = true;
+				CodePanel.Visibility = Visibility.Collapsed;
+			}
+		}
 	}
 
 	private async Task SignInAsync(MsalGraphClient client)
 	{
-		SignInButton.IsEnabled = false;
 		CodePanel.Visibility = Visibility.Collapsed;
 		try
 		{
@@ -113,10 +177,7 @@ public sealed partial class MainWindow : Window
 		finally
 		{
 			if (MsalGraphClient == client)
-			{
-				SignInButton.IsEnabled = true;
 				CodePanel.Visibility = Visibility.Collapsed;
-			}
 		}
 	}
 
@@ -130,7 +191,8 @@ public sealed partial class MainWindow : Window
 
 		ToggleButton.Content = "Start MCP server";
 		PortBox.IsEnabled = ClientIdBox.IsEnabled = TenantIdBox.IsEnabled = DeviceCodeCheck.IsEnabled = WriteCheck.IsEnabled = true;
-		SignInButton.IsEnabled = false;
+		RefreshButton.IsEnabled = false;
+		NewTokenButton.IsEnabled = false;
 		CodePanel.Visibility = Visibility.Collapsed;
 		StatusText.Text = "Server stopped.";
 	}

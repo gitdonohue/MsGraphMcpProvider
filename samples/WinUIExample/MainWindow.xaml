@@ -12,7 +12,8 @@
 		<CheckBox x:Name="DeviceCodeCheck" Content="Use device code sign-in (Client Id only; no Windows broker)" IsChecked="True" />
 		<CheckBox x:Name="WriteCheck" Content="Allow posting channel messages" IsChecked="True" />
 		<Button x:Name="ToggleButton" Content="Start MCP server" Click="ToggleButton_Click" />
-		<Button x:Name="SignInButton" Content="Sign in (device code)" Click="SignInButton_Click" IsEnabled="False" />
+		<Button x:Name="RefreshButton" Content="Refresh token" Click="RefreshButton_Click" IsEnabled="False" />
+		<Button x:Name="NewTokenButton" Content="Acquire new token" Click="NewTokenButton_Click" IsEnabled="False" />
 		<TextBlock x:Name="StatusText" Text="Server stopped." TextWrapping="Wrap" />
 				<StackPanel x:Name="CodePanel" Orientation="Horizontal" Spacing="12" Visibility="Collapsed">
 					<TextBlock x:Name="CodeText" FontWeight="Bold" FontSize="24" IsTextSelectionEnabled="True" VerticalAlignment="Center" />

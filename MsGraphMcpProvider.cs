@@ -15,6 +15,11 @@ public sealed class MsGraphMcpProvider : IAsyncDisposable
 {
 	private WebApplication? application;
 
+	/// <summary>
+	/// When set before StartAsync, enables save_chat_image/save_channel_image, which write only inside this folder.
+	/// </summary>
+	public TeamsImageSaveOptions? ImageSave { get; set; }
+
 	public async Task StartAsync(int port, ITeamsGraphClient client,
 		CancellationToken cancellationToken = default, TeamsChannelWriteAccess? writeAccess = null)
 	{
@@ -61,6 +66,12 @@ public sealed class MsGraphMcpProvider : IAsyncDisposable
 			})
 			.WithHttpTransport(options => options.Stateless = true)
 			.WithTools<TeamsConversationTools>();
+
+		if (ImageSave != null)
+		{
+			builder.Services.AddSingleton(ImageSave);
+			mcp.WithTools<TeamsImageSaveTools>();
+		}
 
 		if (writeAccess?.Enabled == true)
 		{

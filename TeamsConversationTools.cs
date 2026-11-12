@@ -1,4 +1,5 @@
 using ModelContextProtocol;
+using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 using System.ComponentModel;
 using System.Text.Json;
@@ -63,6 +64,43 @@ public sealed class TeamsConversationTools(ITeamsGraphReader graph)
         CancellationToken cancellationToken = default) =>
         ReadPage($"teams/{Id(teamId)}/channels/{Id(channelId)}/messages/{Id(messageId)}/replies",
             "ChannelMessage.Read.All", pageSize, nextLink, "", cancellationToken);
+
+    internal const long MaxImageBytes = 5 * 1024 * 1024;
+
+    [McpServerTool(Name = "read_chat_image", ReadOnly = true, Destructive = false, OpenWorld = true)]
+    [Description("Download an inline image (hosted content) from a Teams chat message. Get messageId and hostedContentId from the <img src=\".../messages/{messageId}/hostedContents/{hostedContentId}/$value\"> in a message body from read_chat_messages. Images over 5 MB are rejected.")]
+    public Task<ImageContentBlock> ReadChatImage(
+        [Description("Chat id from list_chats.")] string chatId,
+        [Description("Message id containing the image.")] string messageId,
+        [Description("Hosted content id from the image URL.")] string hostedContentId,
+        CancellationToken cancellationToken = default) =>
+        ReadImage($"chats/{Id(chatId)}/messages/{Id(messageId)}/hostedContents/{Id(hostedContentId)}/$value",
+            "Chat.Read", cancellationToken);
+
+    [McpServerTool(Name = "read_channel_image", ReadOnly = true, Destructive = false, OpenWorld = true)]
+    [Description("Download an inline image (hosted content) from a Teams channel message or reply. Use the ids from the <img src> URL in the message body. For a reply, pass the reply id as messageId and the root post id as rootMessageId. Images over 5 MB are rejected.")]
+    public Task<ImageContentBlock> ReadChannelImage(
+        [Description("Team id from list_teams.")] string teamId,
+        [Description("Channel id from list_channels.")] string channelId,
+        [Description("Message id containing the image (the reply id for a reply).")] string messageId,
+        [Description("Hosted content id from the image URL.")] string hostedContentId,
+        [Description("Root post id when messageId is a reply; omit otherwise.")] string? rootMessageId = null,
+        CancellationToken cancellationToken = default)
+    {
+        var message = rootMessageId == null
+            ? $"messages/{Id(messageId)}"
+            : $"messages/{Id(rootMessageId)}/replies/{Id(messageId)}";
+        return ReadImage($"teams/{Id(teamId)}/channels/{Id(channelId)}/{message}/hostedContents/{Id(hostedContentId)}/$value",
+            "ChannelMessage.Read.All", cancellationToken);
+    }
+
+    private async Task<ImageContentBlock> ReadImage(string endpoint, string scope, CancellationToken cancellationToken)
+    {
+        var response = await graph.ReadBytesAsync(endpoint, scope, MaxImageBytes, cancellationToken);
+        if (!response.ContentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+            throw new McpException($"The content is not an image (type: {response.ContentType}).");
+        return ImageContentBlock.FromBytes(response.Content, response.ContentType);
+    }
 
     private Task<JsonElement> ReadPage(string path, string scope, int pageSize, string? nextLink,
         string query, CancellationToken cancellationToken)
