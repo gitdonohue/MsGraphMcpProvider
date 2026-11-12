@@ -86,6 +86,14 @@ public sealed partial class MainWindow : Window
 		CodePanel.Visibility = Visibility.Collapsed;
 		try
 		{
+			var cached = await client.TrySignInSilentAsync();
+			if (cached != null)
+			{
+				if (MsalGraphClient == client)
+					StatusText.Text = $"Signed in as {cached.Account.Username} (saved sign-in). MCP tools are ready.";
+				return;
+			}
+
 			var result = await client.SignInWithDeviceCodeAsync(code => DispatcherQueue.TryEnqueue(async () =>
 			{
 				StatusText.Text = code.Message;

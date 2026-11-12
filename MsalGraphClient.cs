@@ -1,5 +1,6 @@
 using Microsoft.Identity.Client;
 using Microsoft.Identity.Client.Broker;
+using Microsoft.Identity.Client.Extensions.Msal;
 using System.Net.Http.Headers;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -33,7 +34,10 @@ public sealed class MsalGraphClient : ITeamsGraphClient
 	/// <param name="tenantId">Tenant id or domain. Defaults to "organizations" when empty.</param>
 	/// <param name="useDeviceCode">Use device-code sign-in instead of the Windows broker.</param>
 	/// <param name="hwnd">Parent window for interactive broker prompts (broker mode only).</param>
-	public MsalGraphClient(string clientId, string? tenantId = null, bool useDeviceCode = false, IntPtr hwnd = default)
+	/// <param name="persistTokenCache">Persist the device-code token cache (encrypted by the OS where supported) so sign-in survives restarts.</param>
+	/// <param name="cacheFilePath">Cache file location. Defaults to a per-client file under LocalApplicationData.</param>
+	public MsalGraphClient(string clientId, string? tenantId = null, bool useDeviceCode = false, IntPtr hwnd = default,
+		bool persistTokenCache = true, string? cacheFilePath = null)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(clientId);
 		UseDeviceCode = useDeviceCode;
@@ -49,6 +53,34 @@ public sealed class MsalGraphClient : ITeamsGraphClient
 		PublicClientApp = useDeviceCode
 			? builder.Build()
 			: builder.WithBroker(new BrokerOptions(BrokerOptions.OperatingSystems.Windows)).Build();
+
+		// The broker manages its own cache; only device-code mode needs explicit persistence.
+		if (useDeviceCode && persistTokenCache)
+			RegisterPersistentCache(clientId, cacheFilePath);
+	}
+
+	private void RegisterPersistentCache(string clientId, string? cacheFilePath)
+	{
+		try
+		{
+			var path = cacheFilePath ?? Path.Combine(
+				Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+				"MsGraphMcpProvider", $"msal_{clientId}.cache");
+			var directory = Path.GetDirectoryName(Path.GetFullPath(path))!;
+			Directory.CreateDirectory(directory);
+			var properties = new StorageCreationPropertiesBuilder(Path.GetFileName(path), directory)
+				.WithLinuxKeyring("com.gitdonohue.msgraphmcpprovider", MsalCacheHelper.LinuxKeyRingDefaultCollection,
+					"MsGraphMcpProvider token cache",
+					new KeyValuePair<string, string>("Version", "1"), new KeyValuePair<string, string>("ProductGroup", "MsGraphMcpProvider"))
+				.WithMacKeyChain("MsGraphMcpProvider", clientId)
+				.Build();
+			var helper = MsalCacheHelper.CreateAsync(properties).GetAwaiter().GetResult();
+			helper.RegisterCache(PublicClientApp.UserTokenCache);
+		}
+		catch (Exception)
+		{
+			// Secure storage unavailable: fall back to an in-memory cache.
+		}
 	}
 
 	[DllImport("kernel32.dll")]
@@ -74,6 +106,30 @@ public sealed class MsalGraphClient : ITeamsGraphClient
 					await PublicClientApp.RemoveAsync(account);
 			authCache = result;
 			return result;
+		}
+		finally
+		{
+			authLock.Release();
+		}
+	}
+
+	/// <summary>Tries to sign in from the persisted token cache without any user interaction. Returns null if not possible.</summary>
+	public async Task<AuthenticationResult?> TrySignInSilentAsync(string[]? scopes = null, CancellationToken cancellationToken = default)
+	{
+		if (!UseDeviceCode)
+			return null;
+		await authLock.WaitAsync(cancellationToken);
+		try
+		{
+			var account = (await PublicClientApp.GetAccountsAsync()).FirstOrDefault();
+			if (account == null)
+				return null;
+			authCache = await PublicClientApp.AcquireTokenSilent(scopes ?? DefaultScopes, account).ExecuteAsync(cancellationToken);
+			return authCache;
+		}
+		catch (MsalException)
+		{
+			return null;
 		}
 		finally
 		{
